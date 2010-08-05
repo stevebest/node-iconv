@@ -7,10 +7,6 @@
 #include <cstring>
 #include <cerrno>
 
-// for stack-based placement new
-#include <alloca.h>
-#include <new>
-
 using namespace v8;
 using namespace node;
 
@@ -26,13 +22,13 @@ public:
   ~Iconv(); // destructor may not run if program is short-lived or aborted
 
   // the actual conversion happens here
-  Handle<Value> Convert(char* data, size_t length);
+  Handle<Value> DoConvert(char* data, size_t length);
 
 private:
   iconv_t conv_;
 };
 
-Iconv::Iconv(iconv_t conv): conv_(conv) {
+Iconv::Iconv(iconv_t conv): ObjectWrap(), conv_(conv) {
   assert(conv_ != (iconv_t) -1);
 }
 
@@ -51,18 +47,17 @@ struct chunk {
 };
 
 // the actual conversion happens here
-Handle<Value> Iconv::Convert(char* data, size_t length) {
+Handle<Value> Iconv::DoConvert(char* data, size_t length) {
   assert(conv_ != (iconv_t) -1);
-  assert(data != 0);
+  assert(data != NULL);
 
-  chunk *c = 0;
+  chunk *c = NULL;
   char *inbuf = data;
   size_t inbytesleft = length;
   size_t offset = 0;
 
   while (true) {
-    // placement new on stack
-    c = new (alloca(sizeof *c)) chunk(c);
+    c = new chunk(c);
 
     char *outbuf = c->data;
     size_t outbytesleft = sizeof(c->data);
@@ -75,10 +70,12 @@ Handle<Value> Iconv::Convert(char* data, size_t length) {
         continue;
       }
       if (errno == EINVAL) {
-        return ThrowException(ErrnoException(errno, "iconv", "Incomplete character sequence."));
+        return ThrowException(ErrnoException(errno, "iconv",
+                                             "Incomplete character sequence."));
       }
       if (errno == EILSEQ) {
-        return ThrowException(ErrnoException(errno, "iconv", "Illegal character sequence."));
+        return ThrowException(ErrnoException(errno, "iconv",
+                                             "Illegal character sequence."));
       }
       return ThrowException(ErrnoException(errno, "iconv"));
     }
@@ -87,11 +84,16 @@ Handle<Value> Iconv::Convert(char* data, size_t length) {
     break;
   }
 
-  // copy linked list of chunks into Buffer in reverse order (last chunk at the top, second-to-last chunk below that, etc)
+  // copy linked list of chunks into Buffer in reverse order
+  // (last chunk at the top, second-to-last chunk below that, etc)
   Buffer& b = *Buffer::New(offset);
-  for (; c != 0; c = c->prev) {
+  chunk *t = 0;
+  while (c) {
     offset -= c->size;
     memcpy(b.data() + offset, c->data, c->size);
+    t = c->prev;
+    delete c;
+    c = t;
   }
 
   return b.handle_;
@@ -105,14 +107,14 @@ Handle<Value> Iconv::Convert(const Arguments& args) {
 
   if (arg->IsString()) {
     String::Utf8Value string(arg->ToString());
-    return self->Convert(*string, string.length());
+    return self->DoConvert(*string, string.length());
   }
 
   if (arg->IsObject()) {
     Handle<Value> object = arg->ToObject();
     if (Buffer::HasInstance(object)) {
       Buffer& buffer = *ObjectWrap::Unwrap<Buffer>(arg->ToObject());
-      return self->Convert(buffer.data(), buffer.length());
+      return self->DoConvert(buffer.data(), buffer.length());
     }
   }
 
@@ -122,14 +124,16 @@ Handle<Value> Iconv::Convert(const Arguments& args) {
 Handle<Value> Iconv::New(const Arguments& args) {
   HandleScope scope;
 
-  // inconsistency: node-iconv expects (source, target) while native iconv expects (target, source)
+  // inconsistency: node-iconv expects (source, target) while native
+  // iconv expects (target, source)
   // wontfix for now, node-iconv's approach feels more intuitive
   String::AsciiValue sourceEncoding(args[0]->ToString());
   String::AsciiValue targetEncoding(args[1]->ToString());
 
   iconv_t conv = iconv_open(*targetEncoding, *sourceEncoding);
   if (conv == (iconv_t) -1) {
-    return ThrowException(ErrnoException(errno, "iconv_open", "Conversion not supported."));
+    return ThrowException(ErrnoException(errno, "iconv_open",
+                          "Conversion not supported."));
   }
 
   Iconv* instance = new Iconv(conv);
