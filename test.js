@@ -41,3 +41,14 @@ try {
 } catch (e) {
 	assert.equal(e.errno, process.EILSEQ);
 }
+
+(function () {
+  // now let's get serious
+  var bigBuffer = new Buffer(2000000);
+  for (var i = 0; i < bigBuffer.length; i++) {
+    bigBuffer[i] = 97; // ASCII for 'a'
+  }
+  var anotherBigBuffer = iconv.convert(bigBuffer);
+  assert.equal(anotherBigBuffer.length, bigBuffer.length);
+})();
+
